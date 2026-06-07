@@ -25,3 +25,9 @@ variable "address_space" {
   type        = list(string)
   default     = ["10.10.0.0/16"]
 }
+
+variable "vm_size" {
+  description = "Unused by this stack. Declared because envs/dev.tfvars is shared with 02_cluster, and Terraform warns on undeclared values."
+  type        = string
+  default     = null
+}
