@@ -3,15 +3,18 @@ name: janitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 */6 * * *"   # every 6 hours
+    - cron: "30 */6 * * *"
 
 concurrency:
-  group: tf-01-foundation   # queues behind any active lifecycle run; anything
-  cancel-in-progress: false # ephemeral found while holding the group is orphaned
+  group: tf-platform
+  cancel-in-progress: false
 
 permissions:
   id-token: write
   contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   sweep:
