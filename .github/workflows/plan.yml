@@ -52,3 +52,38 @@ jobs:
         run: |
           pip install --quiet checkov
           checkov -d . --quiet --soft-fail
+
+  cost:
+      name: infracost diff
+      runs-on: ubuntu-latest
+      permissions:
+        contents: read
+        pull-requests: write
+      env:
+        TF_ROOT: 01_foundation
+      steps:
+        - uses: infracost/actions/setup@v3
+          with:
+            api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+        - name: checkout base branch for baseline
+          uses: actions/checkout@v5
+          with:
+            ref: ${{ github.event.pull_request.base.ref }}
+
+        - name: generate cost baseline
+          run: infracost breakdown --path="${TF_ROOT}" --format=json --out-file=/tmp/infracost-base.json
+
+        - name: checkout PR branch
+          uses: actions/checkout@v5
+
+        - name: cost diff against baseline
+          run: infracost diff --path="${TF_ROOT}" --compare-to=/tmp/infracost-base.json --format=json --out-file=/tmp/infracost.json
+
+        - name: comment on PR
+          run: |
+            infracost comment github --path=/tmp/infracost.json \
+              --repo="${GITHUB_REPOSITORY}" \
+              --github-token=${{ github.token }} \
+              --pull-request=${{ github.event.pull_request.number }} \
+              --behavior=update
