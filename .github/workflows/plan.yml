@@ -5,15 +5,16 @@ on:
     branches: [main]
     paths:
       - "01_foundation/**"
+      - "02_cluster/**"
       - "envs/**"
       - ".github/workflows/plan.yml"
 
 concurrency:
-  group: tf-01-foundation
+  group: tf-platform
   cancel-in-progress: false
 
 permissions:
-  id-token: write   # required for OIDC token exchange with Azure
+  id-token: write
   contents: read
 
 env:
@@ -54,37 +55,64 @@ jobs:
           pip install --quiet checkov
           checkov -d . --quiet --soft-fail
 
+  validate-cluster:
+    name: validate (02_cluster)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 02_cluster
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      - name: init (no backend)
+        run: terraform init -input=false -backend=false
+
+      - name: validate
+        run: terraform validate
+
+      - name: checkov (advisory for now)
+        run: |
+          pip install --quiet checkov
+          checkov -d . --quiet --soft-fail
+
   cost:
-      name: infracost diff
-      runs-on: ubuntu-latest
-      permissions:
-        contents: read
-        pull-requests: write
-      env:
-        TF_ROOT: 01_foundation
-      steps:
-        - uses: infracost/actions/setup@v3
-          with:
-            api-key: ${{ secrets.INFRACOST_API_KEY }}
+    name: infracost diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      TF_ROOT: "."
+    steps:
+      - uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
 
-        - name: checkout base branch for baseline
-          uses: actions/checkout@v5
-          with:
-            ref: ${{ github.event.pull_request.base.ref }}
+      - name: checkout base branch for baseline
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
 
-        - name: generate cost baseline
-          run: infracost breakdown --path="${TF_ROOT}" --format=json --out-file=/tmp/infracost-base.json
+      - name: generate cost baseline
+        run: infracost breakdown --path="${TF_ROOT}" --format=json --out-file=/tmp/infracost-base.json
 
-        - name: checkout PR branch
-          uses: actions/checkout@v5
+      - name: checkout PR branch
+        uses: actions/checkout@v5
 
-        - name: cost diff against baseline
-          run: infracost diff --path="${TF_ROOT}" --compare-to=/tmp/infracost-base.json --format=json --out-file=/tmp/infracost.json
+      - name: cost diff against baseline
+        run: infracost diff --path="${TF_ROOT}" --compare-to=/tmp/infracost-base.json --format=json --out-file=/tmp/infracost.json
 
-        - name: comment on PR
-          run: |
-            infracost comment github --path=/tmp/infracost.json \
-              --repo="${GITHUB_REPOSITORY}" \
-              --github-token=${{ github.token }} \
-              --pull-request=${{ github.event.pull_request.number }} \
-              --behavior=update
+      - name: comment on PR
+        run: |
+          infracost comment github --path=/tmp/infracost.json \
+            --repo="${GITHUB_REPOSITORY}" \
+            --github-token=${{ github.token }} \
+            --pull-request=${{ github.event.pull_request.number }} \
+            --behavior=update
