@@ -8,6 +8,10 @@ on:
       - "envs/**"
       - ".github/workflows/plan.yml"
 
+concurrency:
+  group: tf-01-foundation
+  cancel-in-progress: false
+
 permissions:
   id-token: write   # required for OIDC token exchange with Azure
   contents: read
