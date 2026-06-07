@@ -1,0 +1,84 @@
+name: apply-verify-destroy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 13 * * 1"   # weekly re-proof, Mondays 13:00 UTC
+
+concurrency:
+  group: tf-01-foundation   # same group as plan.yml: serializes everything touching this state
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  lifecycle:
+    name: apply, verify, destroy (01_foundation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: 01_foundation
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+          terraform_wrapper: false
+
+      - name: init
+        run: terraform init -input=false -lockfile=readonly
+
+      - name: apply
+        run: terraform apply -var-file=../envs/dev.tfvars -input=false -auto-approve
+
+      - name: azure login for out-of-band verification
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: verify against ARM
+        run: |
+          set -euo pipefail
+          RG="$(terraform output -raw resource_group_name)"
+          echo "==> Resource group: ${RG}"
+          az group show --name "${RG}" --query properties.provisioningState --output tsv | grep -qx "Succeeded"
+          VNET="$(az network vnet list --resource-group "${RG}" --query "[0].name" --output tsv)"
+          [[ -n "${VNET}" ]] || { echo "ERROR: no vnet found in ${RG}" >&2; exit 1; }
+          echo "==> VNet: ${VNET}"
+          SUBNET_COUNT="$(az network vnet subnet list --resource-group "${RG}" --vnet-name "${VNET}" --query "length(@)" --output tsv)"
+          [[ "${SUBNET_COUNT}" -eq 2 ]] || { echo "ERROR: expected 2 subnets, found ${SUBNET_COUNT}" >&2; exit 1; }
+          echo "==> Verification passed: RG provisioned, vnet present, 2 subnets"
+
+      - name: capture evidence
+        if: always()
+        run: |
+          mkdir -p ../evidence
+          terraform output -json > ../evidence/outputs.json 2>/dev/null || true
+          terraform state list > ../evidence/state-list.txt 2>/dev/null || true
+          RG="$(terraform output -raw resource_group_name 2>/dev/null || true)"
+          if [[ -n "${RG}" ]]; then
+            az resource list --resource-group "${RG}" --output json > ../evidence/resources.json 2>/dev/null || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}
+          path: evidence/
+
+      - name: destroy
+        if: always()
+        run: terraform destroy -var-file=../envs/dev.tfvars -input=false -auto-approve
