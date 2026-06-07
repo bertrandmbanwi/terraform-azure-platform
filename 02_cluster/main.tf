@@ -25,7 +25,7 @@ data "terraform_remote_state" "foundation" {
 
 module "aks" {
   # v0.2.0
-  source = "git::https://github.com/bertrandmbanwi/terraform-azure-modules.git//aks?ref=d7a21b285fe13174e5bd93d394a4abe20b7ce905"
+  source = "git::https://github.com/bertrandmbanwi/terraform-azure-modules.git//aks?ref=7f97ebb682a344f1e45d0b902ab8a2cca63dfbeb"
 
   name                = local.name
   location            = var.location
