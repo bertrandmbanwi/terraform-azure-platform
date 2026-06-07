@@ -1,0 +1,50 @@
+name: plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "01_foundation/**"
+      - "envs/**"
+      - ".github/workflows/plan.yml"
+
+permissions:
+  id-token: write   # required for OIDC token exchange with Azure
+  contents: read
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  plan:
+    name: terraform plan (01_foundation)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 01_foundation
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.5"
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      - name: init
+        run: terraform init -input=false
+
+      - name: validate
+        run: terraform validate
+
+      - name: plan
+        run: terraform plan -var-file=../envs/dev.tfvars -input=false -no-color
+
+      - name: checkov (advisory for now)
+        run: |
+          pip install --quiet checkov
+          checkov -d . --quiet --soft-fail
