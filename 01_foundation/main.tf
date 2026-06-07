@@ -29,7 +29,9 @@ resource "azurerm_resource_group" "platform" {
 }
 
 module "network" {
-  source = "git::https://github.com/bertrandmbanwi/terraform-azure-modules.git//network?ref=v0.1.0"
+  # v0.1.0; pinned to the commit SHA rather than the tag because tags are
+  # mutable and SHA pinning is the supply chain control (CKV_TF_1).
+  source = "git::https://github.com/bertrandmbanwi/terraform-azure-modules.git//network?ref=74754c10dd879ca2e4b5790c80903b4f240f19e9"
 
   name                = local.name
   location            = var.location
