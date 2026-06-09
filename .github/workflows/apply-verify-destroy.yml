@@ -66,6 +66,60 @@ jobs:
           kubectl get nodes -o wide
           echo "==> Verification passed: cluster provisioned, nodes Ready"
 
+      - name: Check out gitops repo
+        uses: actions/checkout@v5
+        with:
+          repository: bertrandmbanwi/gitops-supply-chain
+          path: gitops
+          fetch-depth: 1
+
+      - name: Bootstrap Argo CD
+        run: |
+          set -euo pipefail
+          helm version
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          helm upgrade --install argocd argo/argo-cd \
+            --version 9.5.20 \
+            --namespace argocd --create-namespace \
+            --values ci/argocd-values.yaml \
+            --wait --timeout 6m
+          echo "==> Argo CD installed and ready"
+
+      - name: Sync apps and wait for Synced + Healthy
+        run: |
+          set -euo pipefail
+          kubectl apply -f gitops/bootstrap/root-app.yaml
+          echo "==> Waiting for the hello deployment to be rendered by Argo"
+          for i in $(seq 1 30); do
+            kubectl get deploy hello -n hello >/dev/null 2>&1 && break
+            echo "  not yet ($i/30)"; sleep 10
+          done
+          kubectl wait --for=condition=Available deploy/hello -n hello --timeout=180s
+          echo "==> Waiting for Argo to report Synced + Healthy"
+          SYNC=""; HEALTH=""
+          for i in $(seq 1 30); do
+            SYNC=$(kubectl get application hello -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+            HEALTH=$(kubectl get application hello -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+            echo "  hello: sync=${SYNC:-?} health=${HEALTH:-?} ($i/30)"
+            [[ "$SYNC" == "Synced" && "$HEALTH" == "Healthy" ]] && break
+            sleep 10
+          done
+          [[ "$SYNC" == "Synced" && "$HEALTH" == "Healthy" ]] || {
+            echo "ERROR: hello not Synced/Healthy"; kubectl describe application hello -n argocd; exit 1; }
+          kubectl get applications -n argocd -o wide
+
+      - name: Verify app is serving (in-cluster HTTP 200)
+        run: |
+          set -euo pipefail
+          CODE=$(kubectl run curl-check --rm -i --restart=Never --quiet \
+            --image=curlimages/curl:8.20.0 -- \
+            curl -sS -o /dev/null -w '%{http_code}' \
+            http://hello.hello.svc.cluster.local)
+          echo "==> hello service returned HTTP ${CODE}"
+          [[ "$CODE" == "200" ]] || { echo "ERROR: expected 200, got ${CODE}"; exit 1; }
+          echo "==> Verification passed: synced, healthy, serving"
+
       - name: capture evidence
         if: always()
         run: |
@@ -78,6 +132,9 @@ jobs:
           if [[ -n "${RG}" ]]; then
             az resource list --resource-group "${RG}" --output json > evidence/resources.json 2>/dev/null || true
           fi
+          kubectl get applications -n argocd -o yaml > evidence/argocd-applications.yaml 2>/dev/null || true
+          kubectl get pods -n hello -o wide > evidence/hello-pods.txt 2>/dev/null || true
+          kubectl get pods -n argocd -o wide > evidence/argocd-pods.txt 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,0 +1,12 @@
+# Minimal Argo CD for an ephemeral cluster: drop components we never use
+# in the lifecycle window so the install reaches Ready faster.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false
+server:
+  # Argo is reached only via kubectl in CI; never exposed, so skip its TLS.
+  extraArgs:
+    - --insecure
