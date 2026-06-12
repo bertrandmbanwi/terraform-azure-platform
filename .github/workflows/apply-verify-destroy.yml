@@ -184,6 +184,47 @@ jobs:
           echo "==> Correctly rejected. Kyverno denial:"
           cat /tmp/kyverno-deny.txt
 
+      - name: Verify Kyverno rejects an unsigned image
+        run: |
+          set -euo pipefail
+          cat <<'EOF' > /tmp/unsigned-pod.yaml
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: unsigned-violator
+            namespace: default
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: app
+                image: ghcr.io/bertrandmbanwi/hello-signed:unsigned
+                resources:
+                  requests: { cpu: "10m", memory: "16Mi" }
+                  limits: { cpu: "50m", memory: "32Mi" }
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities: { drop: ["ALL"] }
+          EOF
+          echo "==> Expecting Kyverno to REJECT an unsigned (but otherwise compliant) image"
+          rejected="false"
+          for i in $(seq 1 6); do
+            if kubectl apply -f /tmp/unsigned-pod.yaml 2>/tmp/verify-deny.txt; then
+              echo "  attempt $i: admitted (webhook may not be active yet), retrying"
+              kubectl delete pod unsigned-violator -n default --ignore-not-found >/dev/null 2>&1
+              sleep 10
+            else
+              rejected="true"; break
+            fi
+          done
+          [[ "$rejected" == "true" ]] || { echo "ERROR: unsigned image was not rejected"; exit 1; }
+          echo "==> Correctly rejected. Kyverno denial:"
+          cat /tmp/verify-deny.txt
+
       - name: capture evidence
         if: always()
         run: |
@@ -202,6 +243,7 @@ jobs:
           kubectl get clusterpolicies -o wide > evidence/kyverno-policies.txt 2>/dev/null || true
           kubectl get pods -n kyverno -o wide > evidence/kyverno-pods.txt 2>/dev/null || true
           cp /tmp/kyverno-deny.txt evidence/kyverno-denial.txt 2>/dev/null || true
+          cp /tmp/verify-deny.txt evidence/verify-denial.txt 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
