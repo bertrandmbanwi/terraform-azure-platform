@@ -38,12 +38,19 @@ jobs:
         run: |
           terraform -chdir=01_foundation init -input=false -lockfile=readonly
           terraform -chdir=02_cluster init -input=false -lockfile=readonly
+          terraform -chdir=03_secrets init -input=false -lockfile=readonly
 
       - name: apply 01_foundation
         run: terraform -chdir=01_foundation apply -var-file=../envs/dev.tfvars -input=false -auto-approve
 
       - name: apply 02_cluster
         run: terraform -chdir=02_cluster apply -var-file=../envs/dev.tfvars -input=false -auto-approve
+
+      - name: Provision secrets backend (Key Vault + federation)
+        run: |
+          set -euo pipefail
+          terraform -chdir=03_secrets apply -var-file=../envs/dev.tfvars -input=false -auto-approve
+          echo "==> Key Vault, RBAC grants, and federated credential provisioned"
 
       - name: azure login for verification
         uses: azure/login@v2
@@ -96,6 +103,18 @@ jobs:
             --namespace kyverno --create-namespace \
             --wait --timeout 6m
           echo "==> Kyverno installed and ready"
+
+      - name: Install External Secrets Operator
+        run: |
+          set -euo pipefail
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            --version 2.6.0 \
+            --namespace external-secrets --create-namespace \
+            --values ci/eso-values.yaml \
+            --wait --timeout 6m
+          echo "==> External Secrets Operator installed and ready"
 
       - name: Sync apps and wait for Synced + Healthy
         run: |
@@ -225,6 +244,25 @@ jobs:
           echo "==> Correctly rejected. Kyverno denial:"
           cat /tmp/verify-deny.txt
 
+      - name: Verify secret synced from Key Vault
+        run: |
+          set -euo pipefail
+          EXPECTED="hello-from-key-vault"
+          echo "==> Waiting for ExternalSecret to become Ready"
+          READY=""
+          for i in $(seq 1 18); do
+            READY=$(kubectl get externalsecret demo-secret -n secret-demo \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            echo "  externalsecret demo-secret: Ready=${READY:-?} ($i/18)"
+            [[ "$READY" == "True" ]] && break
+            sleep 10
+          done
+          [[ "$READY" == "True" ]] || { echo "ERROR: ExternalSecret not Ready"; kubectl describe externalsecret demo-secret -n secret-demo; exit 1; }
+          VALUE=$(kubectl get secret demo-secret -n secret-demo -o jsonpath='{.data.value}' | base64 -d)
+          echo "==> Synced secret present, value length ${#VALUE}"
+          [[ "$VALUE" == "$EXPECTED" ]] || { echo "ERROR: synced value did not match expected"; exit 1; }
+          echo "==> Verification passed: Key Vault secret synced via workload identity, no secret in Git or CI"
+
       - name: capture evidence
         if: always()
         run: |
@@ -244,12 +282,21 @@ jobs:
           kubectl get pods -n kyverno -o wide > evidence/kyverno-pods.txt 2>/dev/null || true
           cp /tmp/kyverno-deny.txt evidence/kyverno-denial.txt 2>/dev/null || true
           cp /tmp/verify-deny.txt evidence/verify-denial.txt 2>/dev/null || true
+          kubectl get externalsecrets -A -o wide > evidence/externalsecrets.txt 2>/dev/null || true
+          kubectl get secretstores -A -o wide > evidence/secretstores.txt 2>/dev/null || true
+          kubectl get secret demo-secret -n secret-demo -o jsonpath='{.metadata.name} type={.type}' > evidence/synced-secret.txt 2>/dev/null || true
+          terraform -chdir=03_secrets output -json > evidence/secrets-outputs.json 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: evidence-${{ github.run_id }}
           path: evidence/
+
+      - name: Destroy secrets backend
+        if: always()
+        run: |
+          terraform -chdir=03_secrets destroy -var-file=../envs/dev.tfvars -input=false -auto-approve
 
       - name: destroy 02_cluster
         if: always()

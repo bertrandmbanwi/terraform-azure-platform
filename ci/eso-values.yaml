@@ -1,0 +1,20 @@
+# Single replica is fine on the ephemeral single-node cluster.
+replicaCount: 1
+
+# Requests AND limits on every container so the baseline-hardening
+# require-resources policy admits the ESO pods in the external-secrets namespace.
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits: { cpu: 100m, memory: 128Mi }
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { cpu: 100m, memory: 128Mi }
+
+certController:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { cpu: 100m, memory: 128Mi }
