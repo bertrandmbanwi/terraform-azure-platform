@@ -3,7 +3,8 @@
 # bootstrap.sh - One-time setup for Terraform state backend and GitHub OIDC.
 # Creates: resource group, storage account + container for remote state,
 # an Entra ID app registration with federated credentials for GitHub Actions,
-# and a scoped role assignment. No client secrets are created or stored.
+# and scoped role assignments (Contributor plus a constrained RBAC admin for
+# Key Vault). No client secrets are created or stored.
 # Safe to rerun: all steps are idempotent and reuse existing resources.
 #
 # Usage: ./bootstrap.sh <subscription_id> <github_org/repo> [location]
@@ -127,7 +128,7 @@ if ! grep -q "^github-pr$" <<< "${existing_creds}"; then
   }" --output none
 fi
 
-# --- Role assignment -----------------------------------------------------------
+# --- Role assignments ----------------------------------------------------------
 # Retry: a freshly created service principal can take up to a minute to
 # replicate, and role assignment fails with PrincipalNotFound until then.
 
@@ -142,6 +143,54 @@ if [[ -z "$(az role assignment list --assignee "${APP_ID}" --role Contributor --
       break
     fi
     [[ "${attempt}" -eq 5 ]] && { echo "ERROR: Role assignment failed after 5 attempts." >&2; exit 1; }
+    echo "    Principal not replicated yet, retrying in 15s (attempt ${attempt}/5)"
+    sleep 15
+  done
+fi
+
+# Scoped RBAC admin so stack 03 can create the two Key Vault role assignments it
+# needs, and nothing else. The ABAC condition restricts the assignable role
+# definitions to Key Vault Secrets Officer and Key Vault Secrets User only.
+# Verify the GUIDs with:
+#   az role definition list --name "Key Vault Secrets User" --query "[].name" -o tsv
+
+RBAC_ADMIN_CONDITION="$(cat <<'CONDITION'
+(
+ (
+  !(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})
+ )
+ OR
+ (
+  @Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {b86a8fe4-44ce-4948-aee5-eccb2c155cd6, 4633458b-17de-408a-b874-0445c86b69e6}
+ )
+)
+AND
+(
+ (
+  !(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})
+ )
+ OR
+ (
+  @Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {b86a8fe4-44ce-4948-aee5-eccb2c155cd6, 4633458b-17de-408a-b874-0445c86b69e6}
+ )
+)
+CONDITION
+)"
+
+echo "==> Assigning scoped Role Based Access Control Administrator (Key Vault roles only)"
+if [[ -z "$(az role assignment list --assignee "${APP_ID}" --role "Role Based Access Control Administrator" --scope "/subscriptions/${SUBSCRIPTION_ID}" --query "[0].id" --output tsv)" ]]; then
+  for attempt in 1 2 3 4 5; do
+    if az role assignment create \
+      --assignee "${APP_ID}" \
+      --role "Role Based Access Control Administrator" \
+      --scope "/subscriptions/${SUBSCRIPTION_ID}" \
+      --condition "${RBAC_ADMIN_CONDITION}" \
+      --condition-version "2.0" \
+      --description "CI may assign only Key Vault Secrets Officer/User (stack 03)" \
+      --output none 2>/dev/null; then
+      break
+    fi
+    [[ "${attempt}" -eq 5 ]] && { echo "ERROR: RBAC admin role assignment failed after 5 attempts." >&2; exit 1; }
     echo "    Principal not replicated yet, retrying in 15s (attempt ${attempt}/5)"
     sleep 15
   done
